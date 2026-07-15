@@ -44,7 +44,7 @@ Run on an in-memory ledger via Daml.Script — **no node, no Docker required**:
 
 ```bash
 # install the Daml SDK (bring your own JDK 11+)
-curl -sSL https://get.daml.com/ | sh -s 2.9.0
+curl -sSL https://get.daml.com/ | sh   # installs latest; tested on 2.10.4
 export PATH="$HOME/.daml/bin:$PATH"
 
 # compile + run all Daml.Script tests
