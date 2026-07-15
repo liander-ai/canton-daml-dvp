@@ -1,0 +1,8 @@
+sdk-version: 2.9.0
+name: canton-daml-dvp
+version: 0.1.0
+source: daml
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script

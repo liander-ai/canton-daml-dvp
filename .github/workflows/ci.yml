@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  daml-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub's runner has a fast network, so installing the Daml SDK here is
+      # the reliable way to verify this package (local installs fight slow links).
+      - name: Install Daml SDK 2.9.0
+        run: |
+          curl -sSL https://get.daml.com/ | sh -s 2.9.0
+          echo "$HOME/.daml/bin" >> "$GITHUB_PATH"
+
+      - name: daml version
+        run: daml version
+
+      # `daml test` compiles the package and runs every Daml.Script test on an
+      # in-memory ledger, failing the build on any compile error or assertion.
+      - name: daml test
+        run: daml test
