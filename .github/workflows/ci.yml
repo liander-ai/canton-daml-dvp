@@ -14,10 +14,19 @@ jobs:
 
       # GitHub's runner has a fast network, so installing the Daml SDK here is
       # the reliable way to verify this package (local installs fight slow links).
-      - name: Install Daml SDK 2.9.0
+      - name: Install Daml SDK
         run: |
-          curl -sSL https://get.daml.com/ | sh -s 2.9.0
+          curl -sSL https://get.daml.com/ | sh
           echo "$HOME/.daml/bin" >> "$GITHUB_PATH"
+
+      # Pin the project to the SDK version that actually installed, so `daml test`
+      # uses it directly instead of trying to fetch a different one.
+      - name: Sync daml.yaml to installed SDK
+        run: |
+          VER=$(ls "$HOME/.daml/sdk" | head -1)
+          echo "Installed Daml SDK: $VER"
+          sed -i "s/^sdk-version:.*/sdk-version: $VER/" daml.yaml
+          head -1 daml.yaml
 
       - name: daml version
         run: daml version
