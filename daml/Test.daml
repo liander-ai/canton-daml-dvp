@@ -1,0 +1,98 @@
+-- | Daml.Script tests for the atomic RWA delivery-vs-payment flow.
+-- Run with `daml test` — spins up an in-memory ledger, no node/Docker needed.
+module Test where
+
+import Rwa
+import Daml.Script
+import DA.Assert ((===))
+
+-- | Parties used across the tests.
+data Parties = Parties
+  with
+    centralBank : Party  -- cash issuer
+    registrar : Party    -- asset issuer
+    seller : Party
+    buyer : Party
+
+allocParties : Script Parties
+allocParties = do
+  centralBank <- allocateParty "CentralBank"
+  registrar <- allocateParty "Registrar"
+  seller <- allocateParty "Seller"
+  buyer <- allocateParty "Buyer"
+  pure Parties {centralBank, registrar, seller, buyer}
+
+-- | Happy path: a bond and cash settle atomically; ownership swaps in one tx.
+testAtomicDvp : Script ()
+testAtomicDvp = do
+  Parties {centralBank, registrar, seller, buyer} <- allocParties
+
+  -- issue the security token to the seller and the cash to the buyer
+  assetCid <- submit registrar do
+    createCmd Asset with
+      issuer = registrar, owner = seller, symbol = "BOND-A", quantity = 10.0
+  iouCid <- submit centralBank do
+    createCmd Iou with
+      issuer = centralBank, owner = buyer, currency = "USD", amount = 1000.0
+
+  -- each side initiates its leg of the trade
+  assetTransferCid <- submit seller do
+    exerciseCmd assetCid Asset_Transfer with newOwner = buyer
+  iouTransferCid <- submit buyer do
+    exerciseCmd iouCid Iou_Transfer with newOwner = seller
+
+  -- seller opens the trade, buyer settles it atomically
+  tradeCid <- submit seller do
+    createCmd Trade with seller, buyer, assetTransferCid
+  (newAssetCid, newIouCid) <- submit buyer do
+    exerciseCmd tradeCid Trade_Settle with iouTransferCid
+
+  -- the asset now belongs to the buyer, the cash to the seller
+  Some newAsset <- queryContractId registrar newAssetCid
+  newAsset.owner === buyer
+  newAsset.quantity === 10.0
+
+  Some newIou <- queryContractId centralBank newIouCid
+  newIou.owner === seller
+  newIou.amount === 1000.0
+
+-- | Only the buyer named in the trade can settle it. A third party cannot.
+testOnlyBuyerCanSettle : Script ()
+testOnlyBuyerCanSettle = do
+  Parties {centralBank, registrar, seller, buyer} <- allocParties
+  mallory <- allocateParty "Mallory"
+
+  assetCid <- submit registrar do
+    createCmd Asset with
+      issuer = registrar, owner = seller, symbol = "BOND-A", quantity = 5.0
+  iouCid <- submit centralBank do
+    createCmd Iou with
+      issuer = centralBank, owner = buyer, currency = "USD", amount = 500.0
+
+  assetTransferCid <- submit seller do
+    exerciseCmd assetCid Asset_Transfer with newOwner = buyer
+  iouTransferCid <- submit buyer do
+    exerciseCmd iouCid Iou_Transfer with newOwner = seller
+  tradeCid <- submit seller do
+    createCmd Trade with seller, buyer, assetTransferCid
+
+  -- Mallory is not the trade's buyer, so settlement must fail
+  submitMustFail mallory do
+    exerciseCmd tradeCid Trade_Settle with iouTransferCid
+
+-- | A rejected asset transfer returns the asset to its original owner.
+testRejectReturnsAsset : Script ()
+testRejectReturnsAsset = do
+  Parties {registrar, seller, buyer} <- allocParties
+
+  assetCid <- submit registrar do
+    createCmd Asset with
+      issuer = registrar, owner = seller, symbol = "BOND-A", quantity = 7.0
+  assetTransferCid <- submit seller do
+    exerciseCmd assetCid Asset_Transfer with newOwner = buyer
+
+  returnedCid <- submit buyer do
+    exerciseCmd assetTransferCid AssetTransfer_Reject
+
+  Some returned <- queryContractId registrar returnedCid
+  returned.owner === seller

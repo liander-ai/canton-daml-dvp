@@ -1,0 +1,126 @@
+-- | Canton / Daml demo: atomic Delivery-versus-Payment (DvP) settlement for a
+-- tokenized real-world asset (RWA).
+--
+-- This is the canonical institutional settlement problem: a security-token leg
+-- (the Asset) and a cash leg (the Iou) must change hands *atomically* — either
+-- both transfer in a single transaction, or neither does. Daml's multi-party
+-- authorization model expresses this natively: the trade only settles when the
+-- authority of both counterparties (and both issuers, carried through their
+-- transfer contracts) is present in one transaction.
+--
+-- Runs standalone via `daml test` (Daml.Script, in-memory ledger) — no node,
+-- no Docker required.
+module Rwa where
+
+-- | A cash IOU issued by a trusted issuer (e.g. a central bank or stablecoin
+-- issuer) to an owner. Signed by the issuer; the owner is an observer.
+template Iou
+  with
+    issuer : Party
+    owner : Party
+    currency : Text
+    amount : Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure amount > 0.0
+
+    -- The owner proposes to transfer the IOU to a new owner. This creates a
+    -- pending transfer that still carries the issuer's signature.
+    choice Iou_Transfer : ContractId IouTransfer
+      with newOwner : Party
+      controller owner
+      do create IouTransfer with iou = this, newOwner
+
+-- | A pending IOU transfer awaiting the new owner's acceptance. The issuer
+-- signature is preserved so the resulting Iou remains issuer-authorized.
+template IouTransfer
+  with
+    iou : Iou
+    newOwner : Party
+  where
+    signatory iou.issuer
+    observer iou.owner, newOwner
+
+    choice IouTransfer_Accept : ContractId Iou
+      controller newOwner
+      do create iou with owner = newOwner
+
+    choice IouTransfer_Reject : ContractId Iou
+      controller newOwner
+      do create iou
+
+    choice IouTransfer_Cancel : ContractId Iou
+      controller iou.owner
+      do create iou
+
+-- | A tokenized real-world asset (e.g. a bond or equity unit) issued by a
+-- registrar/issuer to an owner. Same propose-accept transfer pattern as Iou.
+template Asset
+  with
+    issuer : Party
+    owner : Party
+    symbol : Text
+    quantity : Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure quantity > 0.0
+
+    choice Asset_Transfer : ContractId AssetTransfer
+      with newOwner : Party
+      controller owner
+      do create AssetTransfer with asset = this, newOwner
+
+-- | A pending asset transfer awaiting the new owner's acceptance.
+template AssetTransfer
+  with
+    asset : Asset
+    newOwner : Party
+  where
+    signatory asset.issuer
+    observer asset.owner, newOwner
+
+    choice AssetTransfer_Accept : ContractId Asset
+      controller newOwner
+      do create asset with owner = newOwner
+
+    choice AssetTransfer_Reject : ContractId Asset
+      controller newOwner
+      do create asset
+
+    choice AssetTransfer_Cancel : ContractId Asset
+      controller asset.owner
+      do create asset
+
+-- | The atomic Delivery-versus-Payment trade.
+--
+-- Set-up: the seller has already initiated an AssetTransfer to the buyer, and
+-- the buyer has already initiated an IouTransfer to the seller. The seller
+-- creates this Trade referencing the asset leg; the buyer settles it, supplying
+-- the cash leg. Both legs are exercised inside `Trade_Settle`, so the whole
+-- exchange commits or aborts as one transaction — true DvP with no principal
+-- risk to either side.
+template Trade
+  with
+    seller : Party
+    buyer : Party
+    assetTransferCid : ContractId AssetTransfer
+  where
+    signatory seller
+    observer buyer
+
+    choice Trade_Settle : (ContractId Asset, ContractId Iou)
+      with
+        iouTransferCid : ContractId IouTransfer
+      controller buyer
+      do
+        -- buyer accepts the asset (buyer authority present as controller)
+        newAssetCid <- exercise assetTransferCid AssetTransfer_Accept
+        -- seller accepts the cash (seller authority present as Trade signatory)
+        newIouCid <- exercise iouTransferCid IouTransfer_Accept
+        pure (newAssetCid, newIouCid)
+
+    choice Trade_Cancel : ()
+      controller seller
+      do pure ()
